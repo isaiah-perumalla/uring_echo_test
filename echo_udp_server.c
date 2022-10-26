@@ -119,7 +119,6 @@ int main(int argc, char* argv[]) {
         close(sockfd);
         exit(1);
     }
-    printf("sockfd=%d \n", sockfd);
     struct buffer_pool buf_pool = {
             .nbuffers = NBUFFERS,
             .buff_size = BUFFER_SIZE,
@@ -129,7 +128,18 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "failed to init pooled buffers \n");
     }
     assert(buf_pool.buff_ring != NULL);
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_namelen = sizeof(struct sockaddr_storage);
+    msg.msg_controllen = 0;
 
+    int err = io_uring_register_files(&ring, &sockfd, 1); // pre register the udp sock fd
+    if (err) {
+        fprintf(stderr, "io_uring_register_files failed sockfd=%d err=%s", sockfd, strerror(result));
+        exit(1);
+    }
+    printf("sockfd=%d \n", sockfd);
+    close(sockfd);
 }
 
 
