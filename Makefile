@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall
+CFLAGS=-Wall -Wextra -g
 LIBS=/usr/lib/liburing.a
 ODIR=build
 
