@@ -14,8 +14,8 @@
 #include <arpa/inet.h>
 
 #define ENTRIES 32
-#define NBUFFERS 4
-#define BUFFER_SIZE 1024
+#define NBUFFERS 16
+#define BUFFER_SIZE 2048
 
 #define NCQES ENTRIES * 4
 
@@ -155,6 +155,14 @@ int process_recv_msg(struct io_uring_cqe *cqe, struct io_uring *uring, unsigned 
         fprintf(stderr, "IORING_CQE_F_BUFFER not set check kernel version >= 6.0 \n");
         return -1;
     }
+    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+        struct msghdr msg;
+        init_msg_hdr(&msg);
+        int err = add_recv_sqe(uring, fd_idx, &msg);
+        if (err) {
+            return -1;
+        }
+    }
     unsigned short buf_idx = flags >> 16;
     void *buffer = buffer_pool_get(buf_pool, buf_idx);
     struct msghdr msg_hdr;
@@ -282,8 +290,8 @@ int main(int argc, char* argv[]) {
                 }
                 case SEND: {
                     //send completed release buffer back to pool
-                    printf("send completed on buffer=%d\n", req_data.buf_idx);
-                    fflush(stdout);
+//                    printf("send completed on buffer=%d\n", req_data.buf_idx);
+//                    fflush(stdout);
                     buffer_pool_release(&buf_pool, req_data.buf_idx);
                     break;
                 }
