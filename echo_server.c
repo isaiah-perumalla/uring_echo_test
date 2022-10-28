@@ -27,7 +27,7 @@ static void add_read_sqe(int fd);
 
 void submit_close_fd(struct io_uring* ring_ptr, int fd);
 
-void set_user_data(int fd, int type, int buffer_id, const struct io_uring_sqe *sqe);
+void set_user_data(int fd, int type, int buffer_id, struct io_uring_sqe *sqe);
 
 void add_write(int fd, int nbytes, int buffer_id);
 
@@ -123,7 +123,7 @@ void server_loop(int server_socket) {
                     if (sock_conn_fd >= 0) {
                         printf("\nsocket conn accepted fd=%d \n", sock_conn_fd);
                         sqe = io_uring_get_sqe(&ring);
-                        strcpy(&buffers[0], "hello");
+                        strcpy((char*)&buffers[0], "hello");
                         io_uring_prep_send(sqe, sock_conn_fd, &buffers[0], 6, NO_FLAGS);
                         io_uring_sqe_set_flags(sqe, NO_FLAGS);
                         conn_info con = {
@@ -134,7 +134,7 @@ void server_loop(int server_socket) {
                         memcpy(&sqe->user_data, &con, sizeof(con));
                     }
                     // new connected client; read data from socket and re-add accept to monitor for new connections
-                    add_accept_request(server_socket, &client_addr, &client_addr_len);
+                    add_accept_request(server_socket, (struct sockaddr*)&client_addr, &client_addr_len);
                     break;
                 }
                 case READ: {
@@ -216,7 +216,7 @@ void add_write(int fd, int nbytes, int buffer_id) {
 
 }
 
-void set_user_data(int fd, int type, int buffer_id, const struct io_uring_sqe *sqe) {
+void set_user_data(int fd, int type, int buffer_id, struct io_uring_sqe *sqe) {
     conn_info info = {
             .fd = fd,
             .type = type,
