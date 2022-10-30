@@ -1,12 +1,12 @@
 CC=gcc
-CFLAGS=-Wall -Wextra -g
-LIBS=/usr/lib/liburing.a
+CFLAGS=-Wall -Wextra -g -I./liburing/local-build/include
+LIBS=liburing/local-build/lib/liburing.a
 ODIR=build
 
 all: udp_echo tcp_echo
 
 udp_echo: echo_udp_server.o
-	$(CC) $(CFLAGS) -o $@  echo_udp_server.o $(LIBS)
+	$(CC) $(CFLAGS) -o $@  echo_udp_server.o $(LIBS) 
 
 tcp_echo: echo_server.o
 	$(CC) $(CFLAGS) -o $@ echo_server.o  $(LIBS)
