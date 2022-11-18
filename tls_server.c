@@ -78,6 +78,9 @@ void on_tls_handshake_complete(struct io_uring *uring, struct uring_user_data da
 
 void on_tls_handshake_failed(struct io_uring *ring, struct uring_user_data tag) {
     ERR_print_errors_fp(stderr);
+
+    struct ssl_conn *conn = get_ssl_conn(tag.conn_idx);
+    fprintf(stderr, "TLS handshake err [%s] \n", conn->host_name);
     clean_up_connection(ring, (tag).conn_idx);
 }
 
@@ -86,24 +89,27 @@ void on_data_recv(struct io_uring *uring, struct io_uring_cqe *cqe) {
     memcpy(&data, &cqe->user_data, sizeof(data));
     struct ssl_conn *conn = &CONNECTIONS[data.conn_idx];
     int read_bytes = cqe->res;
+    assert(read_bytes > 0 && "read bytes less than 0");
+    fprintf(stderr, "read %d bytes \n", read_bytes);
     const unsigned short buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
     void *buffer = buffer_pool_get(&READ_BUFFER_POOL, buf_idx);
     BIO *read_bio = SSL_get_rbio(conn->ssl);
-    int written = BIO_write(read_bio, buffer, read_bytes);
-    char out_buff[1024];
-    for(int i = 0; i < written;) {
+    BIO_write(read_bio, buffer, read_bytes);
+    char out_buff[2048];
+    const unsigned int max_buffer_size = READ_BUFFER_POOL.buff_size;
+
+    for(;;) {
         int read = SSL_read(conn->ssl, out_buff, sizeof(out_buff)-1);
 
         if (read <= 0) {
             //ssl  record needs more data before decrypt so schedule another read
-            prep_read(conn->fd, uring, DATA_READ, data.conn_idx, READ_BUFFER_POOL.buff_size);
             break;
         }
         out_buff[read] = '\0';
-        i += read;
-        fprintf(stderr, "%s", out_buff);
+        fprintf(stdout, "%s", out_buff);
     }
-
+    buffer_pool_release(&READ_BUFFER_POOL, buf_idx);
+    prep_read(conn->fd, uring, DATA_READ, data.conn_idx, max_buffer_size);
 }
 
 void on_tcp_connect_failed(struct io_uring_cqe *cqe, struct io_uring *ring) {
@@ -130,6 +136,28 @@ void on_tcp_connect(struct io_uring_cqe *cqe, struct io_uring *ring) {
     if (ret == -1) {
         on_tls_handshake_failed(ring, tag);
         //handshake failed;
+    }
+}
+void on_read_err(struct io_uring *uring, struct io_uring_cqe *cqe) {
+    if (cqe->res == 0) {
+        fprintf(stderr, "zero bytes read \n");
+        goto cleanup;
+    }
+    else if (cqe->res == -ENOBUFS) {
+        fprintf(stderr, "READ ERR, no buffers in Pool \n");
+        return;
+    }
+    else {
+        fprintf(stderr, "read error %d \n", cqe->res);
+        goto cleanup;
+    }
+    cleanup:
+    {
+        struct uring_user_data data;
+        memcpy(&data, &cqe->user_data, sizeof(struct uring_user_data));
+        int conn_idx = data.conn_idx;
+        clean_up_connection(uring, conn_idx);
+        fflush(stdout);
     }
 }
 
@@ -194,7 +222,7 @@ int main(int argc, char* argv[]) {
         exit(1);
     }
     
-    err = init_conn(host_ip, port, "google.com", 1);
+    err = init_conn(host_ip, port, "www.google.com", 1);
     if (err) {
         fprintf(stderr, "unable to create socket %s %d", host_ip, port);
         exit(1);

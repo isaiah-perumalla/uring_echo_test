@@ -231,8 +231,12 @@ int setup_iouring(struct io_uring *ring, __u32 ncqes, unsigned int nentries) {
     return result;
 }
 
+void on_read_err(struct io_uring *uring, struct io_uring_cqe *cqe);
+
+
+
 void process_cqe(struct io_uring_cqe *cqe, struct io_uring *ring,
-        struct read_buff_pool *read_buff_pool, struct fixed_buff_pool *write_buff_pool) {
+                 struct read_buff_pool *read_buff_pool, struct fixed_buff_pool *write_buff_pool) {
     struct uring_user_data  tag;
     memcpy(&tag, &cqe->user_data, sizeof(tag));
     __s32 res = cqe->res;
@@ -262,7 +266,12 @@ void process_cqe(struct io_uring_cqe *cqe, struct io_uring *ring,
             break;
         }
         case DATA_READ: {
-            on_data_recv(ring, cqe);
+            if (cqe->res <= 0) {
+                on_read_err(ring, cqe);
+            }
+            else {
+                on_data_recv(ring, cqe);
+            }
             break;
         }
         case CONNECTION_CLOSED: {
