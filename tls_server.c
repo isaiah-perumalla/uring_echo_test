@@ -12,6 +12,39 @@
 #include <liburing/io_uring.h>
 #include <liburing.h>
 #include "uring_tls.h"
+#include "uring_buff_pool.h"
+
+#define BUFFER_SIZE 2048
+#define NBUFFERS 16
+#define MAX_CONNS 16
+#define ENTRIES 1024
+#define NCQES (ENTRIES * 4)
+
+/**
+ * pool initialised in main
+ */
+static struct fixed_buff_pool WRITE_BUFFER_POOL;
+static struct read_buff_pool READ_BUFFER_POOL;
+static struct ssl_conn CONNECTIONS[MAX_CONNS];
+
+struct ssl_conn *get_ssl_conn(uint16_t conn_idx) {
+    struct ssl_conn* conn = &CONNECTIONS[conn_idx];
+    return conn;
+}
+int setup_socket(char *host_ip, int port, struct sockaddr_in *addr);
+
+int init_conn(char *host_ip, int port, char* host_name, __u16 conn_idx) {
+    struct ssl_conn *conn = get_ssl_conn(conn_idx);
+
+    int sock_fd = setup_socket(host_ip, port, &conn->addr_in);
+    if (sock_fd < 0) {
+        return -1;
+    }
+
+    conn->fd = sock_fd;
+    conn->host_name = host_name;
+    return 0;
+}
 
 
 void prep_http_get(struct io_uring *uring, struct uring_user_data *data, struct ssl_conn *conn) {
@@ -29,7 +62,7 @@ void prep_http_get(struct io_uring *uring, struct uring_user_data *data, struct 
     int request_length = strlen(out_buf);
     int n = SSL_write(conn->ssl, out_buf, request_length);
     assert(n == request_length);
-    void *buffer = get_buffer(WRITE_BUFFER_POOL, (*data).conn_idx);
+    void *buffer = fixed_pool_get_buffer(&WRITE_BUFFER_POOL, (*data).conn_idx);
     BIO *write_bio = SSL_get_wbio(conn->ssl);
     int read_bytes = BIO_read(write_bio, buffer, BUFFER_SIZE);
     prep_write(conn->fd, uring, (*data).conn_idx, DATA_WRITE, buffer, read_bytes);
@@ -39,7 +72,7 @@ void prep_http_get(struct io_uring *uring, struct uring_user_data *data, struct 
 void on_tls_handshake_complete(struct io_uring *uring, struct uring_user_data data) {
     struct ssl_conn *conn = &CONNECTIONS[data.conn_idx];
     prep_http_get(uring, &data, conn);
-    prep_read(conn->fd, uring, DATA_READ, data.conn_idx);
+    prep_read(conn->fd, uring, DATA_READ, data.conn_idx, READ_BUFFER_POOL.buff_size);
 
 }
 
@@ -63,7 +96,7 @@ void on_data_recv(struct io_uring *uring, struct io_uring_cqe *cqe) {
 
         if (read <= 0) {
             //ssl  record needs more data before decrypt so schedule another read
-            prep_read(conn->fd, uring, DATA_READ, data.conn_idx);
+            prep_read(conn->fd, uring, DATA_READ, data.conn_idx, READ_BUFFER_POOL.buff_size);
             break;
         }
         out_buff[read] = '\0';
@@ -93,7 +126,7 @@ void on_tcp_connect(struct io_uring_cqe *cqe, struct io_uring *ring) {
     conn->ssl = ssl;
     assert(conn->ssl && "could not create ssl");
     fprintf(stderr, "tcp connected %d %d \n", tag.conn_idx, tag.req_type);
-    int ret = do_ssl_handshake(cqe, ring);
+    int ret = do_ssl_handshake(cqe, ring, &READ_BUFFER_POOL, &WRITE_BUFFER_POOL);
     if (ret == -1) {
         on_tls_handshake_failed(ring, tag);
         //handshake failed;
@@ -127,6 +160,7 @@ int setup_socket(char *host_ip, int port, struct sockaddr_in *addr) {
 
 
 int main(int argc, char* argv[]) {
+
     if (argc < 4) {
         fprintf(stderr, "Usage %s HOST-ip PORT ca-certs-filename\n", argv[0]);
         return 1;
@@ -144,27 +178,29 @@ int main(int argc, char* argv[]) {
 
     struct io_uring ring;
     memset(&ring, 0, sizeof(ring));
-    int ret = setup_iouring(&ring);
+    int ret = setup_iouring(&ring, NCQES, ENTRIES);
     if (ret < 0 ) {
         fprintf(stderr, "unable to setup io uring \n");
         exit(1);
     }
-    WRITE_BUFFER_POOL = setup_fixed_buffers(&ring);
-    setup_pooled_buffers(&ring, &READ_BUFFER_POOL);
-    if (!WRITE_BUFFER_POOL) {
+    int err = setup_fixed_buffers(&ring, &WRITE_BUFFER_POOL, BUFFER_SIZE, NBUFFERS);
+    if (err) {
         fprintf(stderr, "unable to setup fixed buffers \n");
         exit(1);
     }
-    struct sockaddr_in addr_in;
-    int sock_fd = setup_socket(host_ip, port, &addr_in);
-    if (sock_fd < 0) {
+    err = setup_io_uring_pooled_buffers(&ring, &READ_BUFFER_POOL, BUFFER_SIZE, NBUFFERS);
+    if (err) {
+        fprintf(stderr, "unable to io_uring_buf  buffers \n");
+        exit(1);
+    }
+    
+    err = init_conn(host_ip, port, "google.com", 1);
+    if (err) {
         fprintf(stderr, "unable to create socket %s %d", host_ip, port);
         exit(1);
     }
-
-    CONNECTIONS[1].fd = sock_fd;
-    CONNECTIONS[1].host_name = "google.com";
-    prep_connect(sock_fd, (struct sockaddr *) &addr_in, sizeof(addr_in), &ring, 1);
+    struct ssl_conn *conn = get_ssl_conn(1);
+    prep_connect(conn->fd, (struct sockaddr *) &conn->addr_in, sizeof(conn->addr_in), &ring, 1);
 
     struct io_uring_cqe *cqes[NCQES];
     while(1) {
@@ -172,12 +208,12 @@ int main(int argc, char* argv[]) {
         if (-EINTR == ret) continue;
         if (ret < 0) {
             fprintf(stderr, "error submit_wait failed %d\n", ret);
-            break;
+//            break;
         }
         const int count = io_uring_peek_batch_cqe(&ring, &cqes[0], NCQES);
         for (int i = 0; i < count; i++) {
             struct io_uring_cqe *cqe = cqes[i];
-            process_cqe(cqe, &ring);
+            process_cqe(cqe, &ring, &READ_BUFFER_POOL, &WRITE_BUFFER_POOL);
         }
         io_uring_cq_advance(&ring, count);
     }
