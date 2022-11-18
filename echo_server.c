@@ -139,7 +139,7 @@ void server_loop(int server_socket) {
                 }
                 case READ: {
                     int bytes_read = result;
-                    int buffer_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+                    int buffer_id = cqe->flags >> 16;
                     if (bytes_read > 0) {
                         //write back buffer
                         add_write(conn_i.fd, bytes_read, buffer_id);

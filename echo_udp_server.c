@@ -190,7 +190,7 @@ int process_recv_msg(struct io_uring_cqe *cqe, struct io_uring *uring, unsigned 
     }
 
 
-    const unsigned short buf_idx = flags >> IORING_CQE_BUFFER_SHIFT;
+    unsigned short buf_idx = flags >> IORING_CQE_BUFFER_SHIFT;
     void *buffer = buffer_pool_get(buf_pool, buf_idx);
     struct msghdr msg_hdr;
     init_msg_hdr(&msg_hdr);
